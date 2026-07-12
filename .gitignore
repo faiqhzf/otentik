@@ -1,0 +1,31 @@
+# Dataset (jangan di-commit -- besar & bisa didownload ulang dari Kaggle)
+data/train/
+data/valid/
+data/test/
+data/*.zip
+
+# Model hasil training (opsional exclude -- lihat docs/GITHUB_SETUP.md
+# soal kenapa disarankan pakai GitHub Releases untuk file model)
+models/*.keras
+models/*.tflite
+models/*.h5
+
+# Laporan hasil training (regenerable, tidak perlu di-commit tiap training ulang)
+reports/*.png
+reports/*.csv
+reports/*.txt
+
+# Python
+__pycache__/
+*.pyc
+venv/
+.venv/
+*.egg-info/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# OS / editor
+.DS_Store
+.vscode/
+*.swp

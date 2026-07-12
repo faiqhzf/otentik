@@ -1,0 +1,2 @@
+Model hasil training (.keras, .tflite) akan tersimpan di sini.
+Taruh juga cifake_cnn_best.keras di sini kalau mau warm-start/transfer learning.
