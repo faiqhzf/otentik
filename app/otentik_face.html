@@ -257,6 +257,35 @@
     color:var(--muted);
   }
 
+  .explain-toggle{
+    margin-top:14px;
+    width:100%;
+    font-size:12px;
+  }
+  .explanation-trail{
+    text-align:left;
+    margin:12px 0 0;
+    padding:12px 14px;
+    list-style:none;
+    background:rgba(255,255,255,0.02);
+    border:1px solid var(--hairline);
+    border-radius:10px;
+    font-family:var(--font-mono);
+    font-size:11.5px;
+    color:var(--muted);
+    line-height:1.7;
+  }
+  .explanation-trail li{
+    padding-left:1.2em;
+    text-indent:-1.2em;
+  }
+  .explanation-trail li::before{
+    content:"›  ";
+    color:var(--amber);
+  }
+  .explanation-trail li.warn{ color:var(--fake); }
+  .explanation-trail li.warn::before{ content:"⚠  "; }
+
   footer{
     margin-top:30px;
     font-size:11.5px;
@@ -322,11 +351,13 @@
       <div class="result-label" id="resultLabel">&mdash;</div>
       <div class="confidence-meter"><div class="confidence-fill" id="confidenceFill"></div></div>
       <div class="confidence-text" id="confidenceText">&nbsp;</div>
+      <button class="ghost explain-toggle" id="explainToggle" type="button" hidden>Lihat penalaran sistem pakar &#9662;</button>
+      <ul class="explanation-trail" id="explanationTrail" hidden></ul>
     </div>
   </main>
 
   <footer>
-    <b>Cara baca hasil:</b> setiap gambar dinilai lewat <b>dua sudut pandang</b> — foto utuh apa adanya, dan wajah yang sudah dideteksi &amp; diratakan (BlazeFace). Verdict utama memakai sudut pandang wajah, tapi skor foto utuh tetap ditampilkan di bawahnya — dari pengujian, ternyata tidak ada satu rumus gabungan yang selalu benar (kadang justru foto utuh yang lebih tepat, kadang sebaliknya), jadi keduanya ditampilkan apa adanya alih-alih dipaksa jadi satu angka. Kalau keduanya tidak sepakat, akan muncul peringatan eksplisit. Dilatih di dataset <b>140k Real and Fake Faces</b> (wajah asli dari FFHQ, wajah AI dari StyleGAN), memakai transfer learning dari model dasar yang sebelumnya dilatih di CIFAKE (Bird &amp; Lotfi, 2024). Untuk tujuan edukasi/tugas akhir — akurasi dapat menurun pada generator AI yang tidak terwakili di data latih (mis. Midjourney, DALL-E, model diffusion terbaru, atau gaya ilustrasi/lukisan). Seluruh proses berjalan di perangkat ini; gambar tidak dikirim ke server manapun.
+    <b>Cara baca hasil:</b> setiap gambar dinilai lewat <b>dua sudut pandang</b> — foto utuh apa adanya, dan wajah yang sudah dideteksi &amp; diratakan (BlazeFace). Kedua sinyal ini digabung memakai <b>sistem pakar berbasis Certainty Factor</b> (gaya MYCIN, Shortliffe &amp; Buchanan 1975): tiap sinyal diberi bobot sesuai fakta-fakta dari gambar (keseragaman background, ukuran wajah relatif, keyakinan deteksi wajah), lalu digabung pakai rumus kombinasi CF resmi — bukan rata-rata/ambil-yang-terkecil seperti percobaan sebelumnya yang terbukti tidak konsisten. Ketuk "Lihat penalaran" untuk melihat aturan mana saja yang aktif dan kenapa. Dilatih di dataset <b>140k Real and Fake Faces</b> (wajah asli dari FFHQ, wajah AI dari StyleGAN), memakai transfer learning dari model dasar yang sebelumnya dilatih di CIFAKE (Bird &amp; Lotfi, 2024). Untuk tujuan edukasi/tugas akhir — akurasi dapat menurun pada generator AI yang tidak terwakili di data latih (mis. Midjourney, DALL-E, model diffusion terbaru, atau gaya ilustrasi/lukisan). Seluruh proses berjalan di perangkat ini; gambar tidak dikirim ke server manapun.
   </footer>
 
 </div>
@@ -359,6 +390,14 @@ const resultSection = document.getElementById('resultSection');
 const resultLabel = document.getElementById('resultLabel');
 const confidenceFill = document.getElementById('confidenceFill');
 const confidenceText = document.getElementById('confidenceText');
+const explainToggle = document.getElementById('explainToggle');
+const explanationTrail = document.getElementById('explanationTrail');
+
+explainToggle.addEventListener('click', () => {
+  const nowHidden = explanationTrail.hidden;
+  explanationTrail.hidden = !nowHidden;
+  explainToggle.textContent = nowHidden ? 'Sembunyikan penalaran sistem pakar ▴' : 'Lihat penalaran sistem pakar ▾';
+});
 
 function base64ToArrayBuffer(base64) {
   const binaryString = atob(base64);
@@ -427,6 +466,8 @@ resetBtn.addEventListener('click', () => {
   previewWrap.hidden = true;
   actionRow.hidden = true;
   resultSection.hidden = true;
+  explainToggle.hidden = true;
+  explanationTrail.hidden = true;
   statusLine.textContent = '';
   scanLine.classList.remove('active');
 });
@@ -548,7 +589,7 @@ async function detectAndAlignFace(imgEl) {
   const faces = await faceModel.estimateFaces(sourceCanvas, false);
 
   if (faces.length === 0) {
-    return { canvas: null, count: 0, sourceCanvas };
+    return { canvas: null, count: 0, sourceCanvas, faceAreaRatio: 0, blazefaceScore: 0 };
   }
 
   let largest = faces[0];
@@ -561,7 +602,11 @@ async function detectAndAlignFace(imgEl) {
     ? alignFaceByEyes(sourceCanvas, largest)
     : cropByBoundingBox(sourceCanvas, largest);
 
-  return { canvas, count: faces.length, sourceCanvas };
+  const imageArea = sourceCanvas.width * sourceCanvas.height;
+  const faceAreaRatio = imageArea > 0 ? faceArea(largest) / imageArea : 0;
+  const blazefaceScore = Array.isArray(largest.probability) ? largest.probability[0] : (largest.probability || 0.9);
+
+  return { canvas, count: faces.length, sourceCanvas, faceAreaRatio, blazefaceScore };
 }
 
 function runClassifier(canvas) {
@@ -571,6 +616,128 @@ function runClassifier(canvas) {
   inputTensor.dispose();
   output.dispose();
   return probReal;
+}
+
+// ============================================================
+// SISTEM PAKAR: menggabungkan sinyal "foto utuh" & "wajah ter-crop"
+// pakai Certainty Factor (gaya MYCIN, Shortliffe & Buchanan 1975) +
+// basis aturan (rule base) yang bobotnya berdasar fakta dari gambar.
+//
+// Kenapa bukan rata-rata / ambil-yang-terkecil (versi sebelumnya):
+// dari pengujian nyata, TIDAK ADA rumus matematis tetap yang selalu
+// benar -- kadang sinyal wajah yang benar, kadang sinyal foto utuh.
+// Sistem pakar memilih rumus & bobot secara KONDISIONAL berdasar
+// fakta gambar (basis pengetahuan), bukan satu formula kaku.
+// ============================================================
+
+function probToCF(prob) {
+  // Ubah probabilitas (0..1) jadi Certainty Factor (-1..+1).
+  // CF>0 condong ASLI, CF<0 condong BUATAN AI, CF=0 tidak ada bukti.
+  return 2 * prob - 1;
+}
+
+function cfToProb(cf) {
+  return (cf + 1) / 2;
+}
+
+function combineCF(cf1, cf2) {
+  // Rumus kombinasi Certainty Factor resmi (MYCIN, Shortliffe & Buchanan 1975).
+  if (cf1 >= 0 && cf2 >= 0) {
+    return cf1 + cf2 * (1 - cf1);
+  } else if (cf1 < 0 && cf2 < 0) {
+    return cf1 + cf2 * (1 + cf1);
+  } else {
+    const denom = 1 - Math.min(Math.abs(cf1), Math.abs(cf2));
+    return denom === 0 ? 0 : (cf1 + cf2) / denom;
+  }
+}
+
+// Fakta: seberapa "rata" warna di tepi gambar (kemungkinan besar area
+// background, bukan wajah). Studio/AI-headshot sering punya background
+// nyaris satu warna -- dari pengujian, ini justru salah satu penanda
+// AI yang hilang kalau langsung crop ke wajah saja.
+function computeBackgroundUniformity(canvas) {
+  const ctx = canvas.getContext('2d');
+  const w = canvas.width, h = canvas.height;
+  const borderWidth = Math.max(3, Math.floor(Math.min(w, h) * 0.06));
+  const samples = [];
+
+  function sampleRegion(sx, sy, sw, sh) {
+    sx = Math.max(0, Math.floor(sx)); sy = Math.max(0, Math.floor(sy));
+    sw = Math.max(1, Math.floor(sw)); sh = Math.max(1, Math.floor(sh));
+    if (sx + sw > w) sw = w - sx;
+    if (sy + sh > h) sh = h - sy;
+    const data = ctx.getImageData(sx, sy, sw, sh).data;
+    for (let i = 0; i < data.length; i += 4) {
+      samples.push((data[i] + data[i + 1] + data[i + 2]) / 3);
+    }
+  }
+
+  sampleRegion(0, 0, w, borderWidth);
+  sampleRegion(0, h - borderWidth, w, borderWidth);
+  sampleRegion(0, 0, borderWidth, h);
+  sampleRegion(w - borderWidth, 0, borderWidth, h);
+
+  if (samples.length === 0) return 0;
+  const mean = samples.reduce((a, b) => a + b, 0) / samples.length;
+  const variance = samples.reduce((a, b) => a + (b - mean) ** 2, 0) / samples.length;
+  const std = Math.sqrt(variance);
+
+  // std~0 -> uniformity=1 (rata sempurna); std>=60 -> uniformity=0 (bervariasi)
+  return Math.max(0, Math.min(1, 1 - std / 60));
+}
+
+// Basis pengetahuan (rule base) + inference forward-chaining sederhana.
+// Mengembalikan { finalProb, trail } -- trail = jejak penjelasan tiap
+// aturan yang aktif, supaya keputusan bisa ditelusuri (bukan black-box).
+function runExpertSystem({ wholeProb, faceProb, faceCount, faceAreaRatio, blazefaceScore, backgroundUniformity }) {
+  const trail = [];
+  const cfWhole = probToCF(wholeProb);
+  trail.push({ text: `Sinyal foto utuh: ${(wholeProb * 100).toFixed(1)}% asli (CF=${cfWhole.toFixed(2)})` });
+
+  // R1: tidak ada wajah terdeteksi -> hanya sinyal foto utuh yang dipakai
+  if (faceProb === null) {
+    trail.push({ text: 'R1 aktif: tidak ada wajah terdeteksi → verdict memakai sinyal foto utuh saja.', warn: true });
+    return { finalProb: wholeProb, trail };
+  }
+
+  const cfFace = probToCF(faceProb);
+  trail.push({ text: `Sinyal wajah ter-crop: ${(faceProb * 100).toFixed(1)}% asli (CF=${cfFace.toFixed(2)})` });
+
+  let faceWeight = 1.0;
+  let wholeWeight = 1.0;
+
+  // R2: background seragam/rata -> naikkan bobot sinyal foto utuh
+  if (backgroundUniformity > 0.7) {
+    wholeWeight *= 1.6;
+    trail.push({ text: `R2 aktif: background rata/seragam (skor ${backgroundUniformity.toFixed(2)}) → bobot sinyal foto utuh dinaikkan.` });
+  }
+
+  // R3: wajah terlalu kecil relatif ke frame -> turunkan bobot sinyal wajah
+  if (faceAreaRatio < 0.15) {
+    faceWeight *= 0.5;
+    trail.push({ text: `R3 aktif: wajah cuma ${(faceAreaRatio * 100).toFixed(1)}% dari frame → bobot sinyal wajah diturunkan.`, warn: true });
+  }
+
+  // R4: BlazeFace kurang yakin ini benar-benar wajah -> turunkan bobot sinyal wajah
+  if (blazefaceScore < 0.8) {
+    faceWeight *= 0.6;
+    trail.push({ text: `R4 aktif: keyakinan deteksi wajah rendah (${(blazefaceScore * 100).toFixed(1)}%) → bobot sinyal wajah diturunkan.`, warn: true });
+  }
+
+  // R5: foto grup (banyak wajah) -- catatan transparansi, tidak ubah bobot
+  if (faceCount > 3) {
+    trail.push({ text: `R5 aktif: ${faceCount} wajah terdeteksi (foto grup) → verdict cuma mewakili 1 wajah terbesar.`, warn: true });
+  }
+
+  const weightedCfWhole = Math.max(-1, Math.min(1, cfWhole * wholeWeight));
+  const weightedCfFace = Math.max(-1, Math.min(1, cfFace * faceWeight));
+
+  const combinedCF = combineCF(weightedCfWhole, weightedCfFace);
+  const finalProb = cfToProb(combinedCF);
+  trail.push({ text: `Kombinasi Certainty Factor (rumus MYCIN): CF gabungan = ${combinedCF.toFixed(2)} → ${(finalProb * 100).toFixed(1)}% asli.` });
+
+  return { finalProb, trail };
 }
 
 analyzeBtn.addEventListener('click', async () => {
@@ -584,7 +751,7 @@ analyzeBtn.addEventListener('click', async () => {
     await loadModels();
     await new Promise(r => setTimeout(r, 400));
 
-    const { canvas: faceCanvas, count, sourceCanvas } = await detectAndAlignFace(previewImg);
+    const { canvas: faceCanvas, count, sourceCanvas, faceAreaRatio, blazefaceScore } = await detectAndAlignFace(previewImg);
 
     statusLine.textContent = faceCanvas
       ? (count > 1 ? `Menganalisis (dari ${count} wajah terdeteksi)...` : 'Menganalisis...')
@@ -601,17 +768,18 @@ analyzeBtn.addEventListener('click', async () => {
     const faceProb = faceCanvas ? runClassifier(faceCanvas) : null;
 
     // PENTING (temuan dari pengujian nyata): sempat dicoba menggabungkan
-    // kedua sinyal jadi satu angka (ambil yang paling "curiga AI", atau
-    // dirata-rata) -- ternyata TIDAK ADA rumus kombinasi yang konsisten
-    // benar di semua kasus uji nyata. Kadang sinyal wajah yang benar,
-    // kadang sinyal foto utuh yang benar, tergantung gambarnya. Daripada
-    // memaksakan satu angka gabungan yang bisa menyesatkan, kedua sinyal
-    // ditampilkan apa adanya -- verdict utama pakai sinyal wajah (karena
-    // itu tujuan intinya), tapi kalau dua sinyal itu tidak sepakat,
-    // pengguna diberi tahu secara eksplisit supaya tidak menelan mentah-mentah.
-    const probReal = faceProb === null ? wholeProb : faceProb;
-    const disagree = faceProb !== null && Math.abs(faceProb - wholeProb) > 0.3
-      && (faceProb >= 0.5) !== (wholeProb >= 0.5);
+    // kedua sinyal jadi satu angka pakai rumus tetap (ambil yang paling
+    // "curiga AI", atau dirata-rata) -- ternyata TIDAK ADA rumus kombinasi
+    // matematis tetap yang konsisten benar di semua kasus uji. Sekarang
+    // dipakai SISTEM PAKAR: basis aturan (rule base) menimbang tiap sinyal
+    // berdasar fakta dari gambar (background rata? wajah kecil? BlazeFace
+    // yakin?), lalu digabung pakai Certainty Factor (rumus MYCIN) -- bukan
+    // rumus tetap, tapi penalaran yang bisa dijelaskan & ditelusuri.
+    const backgroundUniformity = computeBackgroundUniformity(wholeImageCanvas(sourceCanvas));
+    const { finalProb: probReal, trail } = runExpertSystem({
+      wholeProb, faceProb, faceCount: count,
+      faceAreaRatio, blazefaceScore, backgroundUniformity,
+    });
 
     const isReal = probReal >= 0.5;
     const confidence = isReal ? probReal : 1 - probReal;
@@ -621,17 +789,19 @@ analyzeBtn.addEventListener('click', async () => {
     confidenceFill.className = 'confidence-fill ' + (isReal ? 'real' : 'fake');
     confidenceFill.style.width = (confidence * 100).toFixed(1) + '%';
 
-    const detailParts = [`foto utuh: ${(wholeProb * 100).toFixed(1)}% asli`];
-    if (faceProb !== null) {
-      detailParts.push(`wajah ter-crop: ${(faceProb * 100).toFixed(1)}% asli`);
-    }
-    let detailText = 'Keyakinan: ' + (confidence * 100).toFixed(1) + '%'
-      + '  ·  ' + detailParts.join(' · ')
-      + (count > 1 ? ` · ${count} wajah terdeteksi` : '');
-    if (disagree) {
-      detailText += '  ⚠️ Dua sudut pandang tidak sepakat -- jangan telan mentah-mentah, lihat keduanya.';
-    }
-    confidenceText.textContent = detailText;
+    confidenceText.textContent = 'Keyakinan (sistem pakar): ' + (confidence * 100).toFixed(1) + '%'
+      + (count > 1 ? `  ·  ${count} wajah terdeteksi` : '');
+
+    explanationTrail.innerHTML = '';
+    trail.forEach(item => {
+      const li = document.createElement('li');
+      li.textContent = item.text;
+      if (item.warn) li.className = 'warn';
+      explanationTrail.appendChild(li);
+    });
+    explainToggle.hidden = false;
+    explanationTrail.hidden = true;
+    explainToggle.textContent = 'Lihat penalaran sistem pakar ▾';
 
     resultSection.hidden = false;
     statusLine.textContent = '';

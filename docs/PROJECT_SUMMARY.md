@@ -206,3 +206,63 @@ berarti "lebih akurat" di semua kasus.
 5. **Uji coba threshold BlazeFace**: `scoreThreshold` saat ini diturunkan
    ke 0,5 supaya lebih toleran mendeteksi wajah di foto grup — perlu
    diuji lebih sistematis apakah ini menambah salah-deteksi di kasus lain.
+
+---
+
+## 9. Fase 4: Sistem Pakar untuk Menggabungkan Dua Sinyal
+
+Menindaklanjuti temuan di bagian 6 (tidak ada rumus matematis tetap yang
+konsisten menggabungkan sinyal foto-utuh dan wajah-ter-crop), `app/otentik_face.html`
+sekarang memakai **sistem pakar** untuk penggabungan ini, bukan rumus tetap.
+
+### Basis pengetahuan (rule base)
+Fakta yang diekstrak otomatis dari tiap gambar: rasio luas wajah terhadap
+frame, skor keyakinan deteksi BlazeFace, jumlah wajah terdeteksi, dan
+**keseragaman warna di tepi gambar** (proksi untuk "background rata",
+dihitung dari standar deviasi piksel di 4 sisi tepi foto). Lima aturan
+IF-THEN dievaluasi (forward chaining) untuk menimbang ulang kedua sinyal
+sebelum digabung:
+
+| Aturan | Kondisi | Efek |
+|---|---|---|
+| R1 | Tidak ada wajah terdeteksi | Verdict pakai sinyal foto-utuh saja |
+| R2 | Background rata (uniformity > 0,7) | Bobot sinyal foto-utuh dinaikkan 1,6× |
+| R3 | Wajah < 15% luas frame | Bobot sinyal wajah diturunkan 0,5× |
+| R4 | Skor keyakinan BlazeFace < 0,8 | Bobot sinyal wajah diturunkan 0,6× |
+| R5 | > 3 wajah terdeteksi (foto grup) | Catatan transparansi (bobot tak berubah) |
+
+### Mesin inferensi: Certainty Factor (gaya MYCIN)
+Setiap probabilitas CNN (0–1) diubah jadi *Certainty Factor* (CF, −1
+sampai +1) lewat `CF = 2×prob − 1`, ditimbang sesuai aturan yang aktif,
+lalu digabung pakai rumus kombinasi CF resmi (Shortliffe & Buchanan,
+1975, dipakai pertama kali di sistem pakar medis MYCIN):
+
+```
+CF1,CF2 ≥ 0  :  CF = CF1 + CF2×(1−CF1)
+CF1,CF2 < 0  :  CF = CF1 + CF2×(1+CF1)
+berlawanan   :  CF = (CF1+CF2) / (1−min(|CF1|,|CF2|))
+```
+
+### Fasilitas penjelasan (explanation facility)
+Setiap keputusan menyertakan jejak lengkap aturan mana yang aktif dan
+kenapa (bisa dilihat lewat tombol "Lihat penalaran sistem pakar" di
+aplikasi) — ciri khas sistem pakar dibanding CNN murni yang black-box.
+
+### Kenapa ini dipilih dibanding rumus tetap
+Rumus tetap (`min()`, rata-rata) yang dicoba sebelumnya masing-masing
+punya kasus gagal yang berbeda (lihat bagian 6 & 7) karena bobot yang
+"benar" untuk tiap sinyal **bergantung konteks gambar** — persis jenis
+masalah yang cocok diselesaikan sistem pakar berbasis aturan, bukan satu
+formula statis. Semua rumus CF & rule engine sudah diverifikasi lewat
+pengujian unit (kombinasi komutatif, penguatan bukti searah, tiap aturan
+aktif tepat pada kondisinya) sebelum dipasang ke aplikasi.
+
+### Saran pengembangan lanjutan untuk sistem pakar ini
+- **Latih bobot aturan**, bukan nilai tetap (1,6× / 0,5× / 0,6×) — bisa
+  dioptimalkan dari data uji berlabel supaya tidak lagi berbasis intuisi.
+- **Tambah aturan baru** seiring ditemukannya pola kegagalan baru (mis.
+  aturan khusus foto dengan pencahayaan ekstrem).
+- **Fuzzy logic** sebagai alternatif Certainty Factor — kalau mau
+  transisi antar-aturan lebih halus (bukan ambang batas keras seperti
+  `uniformity > 0.7`).
+
