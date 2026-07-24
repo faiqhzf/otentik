@@ -755,6 +755,16 @@ function runExpertSystem({ wholeProb, faceProb, faceCount, faceAreaRatio, blazef
   trail.push({ text: `Kombinasi Certainty Factor (rumus MYCIN): CF gabungan = ${combinedCF.toFixed(2)} → ${(finalProb * 100).toFixed(1)}% asli.` });
 
   return { finalProb, trail };
+
+  // R6: Resolusi Konflik (False Positive Latar Belakang)
+  // Jika wajah terdeteksi asli, namun foto utuh terdeteksi AI secara ekstrem
+  if (cfFace > 0 && cfGlobal < 0) {
+    // Amplikasi sinyal wajah dan beri penalti berat pada sinyal foto utuh
+    // Alasan: Pola frekuensi tinggi pada background (grid/noise) sering mengelabui CNN global
+    faceWeight *= 2.0;
+    globalWeight *= 0.2;
+    trail.push({ text: `R6 aktif: Kontradiksi sinyal (Wajah Asli vs Global AI). Sinyal foto utuh dipenalti untuk menekan False Positive pada latar belakang.`, warn: false });
+  }
 }
 
 analyzeBtn.addEventListener('click', async () => {
