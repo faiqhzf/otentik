@@ -713,10 +713,27 @@ function runExpertSystem({ wholeProb, faceProb, faceCount, faceAreaRatio, blazef
     trail.push({ text: `R2 aktif: background rata/seragam (skor ${backgroundUniformity.toFixed(2)}) → bobot sinyal foto utuh dinaikkan.` });
   }
 
-  // R3: wajah terlalu kecil relatif ke frame -> turunkan bobot sinyal wajah
-  if (faceAreaRatio < 0.15) {
-    faceWeight *= 0.5;
-    trail.push({ text: `R3 aktif: wajah cuma ${(faceAreaRatio * 100).toFixed(1)}% dari frame → bobot sinyal wajah diturunkan.`, warn: true });
+// R3: Penyesuaian bobot berdasarkan rasio area wajah & Prinsip Veto
+  if (faceAreaRatio < 0.05) { 
+      // Kasus Ekstrem: Wajah sangat kecil (di bawah 5% frame)
+      if (cfFace < 0) {
+          // PRINSIP VETO: Wajah kecil terdeteksi AI. Amplikasi sinyal wajah & hancurkan sinyal utuh.
+          faceWeight *= 1.5; 
+          
+          // CATATAN PENTING: Jika parameter CF foto utuh di fungsi Anda BUKAN bernama 'cfGlobal', 
+          // ubah kata 'cfGlobal' di baris bawah ini menjadi nama variabel yang sesuai (misal: cfUtuh).
+          cfGlobal *= 0.1; 
+          
+          trail.push({ text: `R3 aktif: Wajah sangat kecil (${(faceAreaRatio * 100).toFixed(1)}% frame) & anomali terdeteksi. Sinyal foto utuh diveto.`, warn: true });
+      } else {
+          // Wajah kecil dikira asli, turunkan karena kekurangan data piksel komputasi.
+          faceWeight *= 0.5;
+          trail.push({ text: `R3 aktif: Wajah terlalu kecil (${(faceAreaRatio * 100).toFixed(1)}% frame). Bobot sinyal wajah diturunkan.`, warn: true });
+      }
+  } else if (faceAreaRatio < 0.15) {
+      // Kasus Standar: Wajah agak kecil (5% - 15%)
+      faceWeight *= 0.5;
+      trail.push({ text: `R3 aktif: wajah cuma ${(faceAreaRatio * 100).toFixed(1)}% dari frame → bobot sinyal wajah diturunkan.`, warn: true });
   }
 
   // R4: BlazeFace kurang yakin ini benar-benar wajah -> turunkan bobot sinyal wajah
